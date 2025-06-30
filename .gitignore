@@ -1,0 +1,16 @@
+# images
+*.png
+*.jpg
+*.jpeg
+
+# pyc files
+*.pyc
+
+# log files
+*.log
+
+# json files
+*.json
+
+# model files
+*.pth
