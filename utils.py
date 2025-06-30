@@ -1,3 +1,5 @@
+# SiT/utils.py
+
 # Copyright (c) 2015-present, Facebook, Inc.
 # All rights reserved.
 """
@@ -12,12 +14,13 @@ import time
 import datetime
 import subprocess
 from collections import defaultdict, deque
+import math
 
 import numpy as np
 import torch
 from torch import nn
+import torch.nn.functional as F
 import torch.distributed as dist
-
 
 import argparse
 
@@ -171,21 +174,12 @@ class SmoothedValue(object):
 
 
 def reduce_dict(input_dict, average=True):
-    """
-    Args:
-        input_dict (dict): all the values will be reduced
-        average (bool): whether to do average or sum
-    Reduce the values in the dictionary from all processes so that all processes
-    have the averaged results. Returns a dict with the same fields as
-    input_dict, after reduction.
-    """
     world_size = get_world_size()
     if world_size < 2:
         return input_dict
     with torch.no_grad():
         names = []
         values = []
-        # sort the keys so that they are consistent across processes
         for k in sorted(input_dict.keys()):
             names.append(k)
             values.append(input_dict[k])
@@ -337,9 +331,6 @@ def save_on_master(*args, **kwargs):
 
 
 def setup_for_distributed(is_master):
-    """
-    This function disables printing when not in master process
-    """
     import builtins as __builtin__
     builtin_print = __builtin__.print
 
@@ -351,17 +342,13 @@ def setup_for_distributed(is_master):
     __builtin__.print = print
 
 def init_distributed_mode(args):
-    # launched with torch.distributed.launch
     if 'RANK' in os.environ and 'WORLD_SIZE' in os.environ:
         args.rank = int(os.environ["RANK"])
         args.world_size = int(os.environ['WORLD_SIZE'])
         args.gpu = int(os.environ['LOCAL_RANK'])
-    # launched with submitit on a slurm cluster
     elif 'SLURM_PROCID' in os.environ:
         args.rank = int(os.environ['SLURM_PROCID'])
         args.gpu = args.rank % torch.cuda.device_count()
-    # launched naively with `python main_dino.py`
-    # we manually add MASTER_ADDR and MASTER_PORT to env variables
     elif torch.cuda.is_available():
         print('Will run the code on one GPU.')
         args.rank, args.gpu, args.world_size = 0, 0, 1
@@ -371,7 +358,6 @@ def init_distributed_mode(args):
         print('Does not support training without GPU.')
         sys.exit(1)
 
-    args.distributed = True
     dist.init_process_group(
         backend="nccl",
         init_method=args.dist_url,
@@ -399,7 +385,6 @@ def get_params_groups(model):
     for name, param in model.named_parameters():
         if not param.requires_grad:
             continue
-        # we do not regularize biases nor Norm parameters
         if name.endswith(".bias") or len(param.shape) == 1:
             not_regularized.append(param)
         else:
@@ -408,7 +393,7 @@ def get_params_groups(model):
 
 def multi_scale(samples, model):
     v = None
-    for s in [1, 1/2**(1/2), 1/2]:  # we use 3 different scales
+    for s in [1, 1/2**(1/2), 1/2]:
         if s == 1:
             inp = samples.clone()
         else:
@@ -421,3 +406,53 @@ def multi_scale(samples, model):
     v /= 3
     v /= v.norm()
     return v
+
+# --- NEWLY ADDED FUNCTION ---
+def interpolate_pos_embed(model, checkpoint_model_state):
+    """
+    Interpolates positional embeddings of a ViT model from a checkpoint.
+    This is necessary when fine-tuning on a different resolution than pre-training.
+    """
+    pos_embed_checkpoint = checkpoint_model_state['pos_embed']
+    embedding_size = pos_embed_checkpoint.shape[-1]
+    
+    # Get the number of patches from the new model's patch embedding layer
+    num_patches = model.patch_embed.num_patches
+    # Get the number of extra tokens (like CLS)
+    num_extra_tokens = model.pos_embed.shape[-2] - num_patches
+
+    # Height and width of the pre-trained positional embedding grid
+    orig_size = int((pos_embed_checkpoint.shape[-2] - num_extra_tokens) ** 0.5)
+    # Height and width of the new model's positional embedding grid
+    new_size = int(num_patches ** 0.5)
+
+    # Do not interpolate if the size is the same
+    if orig_size == new_size:
+        print("Positional embedding size matches. No need to interpolate.")
+        return
+
+    print(f"Interpolating positional embedding from {orig_size}x{orig_size} to {new_size}x{new_size}")
+    
+    # Separate the CLS token embedding from the patch embeddings
+    extra_tokens = pos_embed_checkpoint[:, :num_extra_tokens]
+    patch_pos_embed = pos_embed_checkpoint[:, num_extra_tokens:]
+
+    # Reshape to a 2D grid for interpolation
+    patch_pos_embed = patch_pos_embed.reshape(1, orig_size, orig_size, embedding_size).permute(0, 3, 1, 2)
+    
+    # Perform bicubic interpolation
+    patch_pos_embed = F.interpolate(
+        patch_pos_embed,
+        size=(new_size, new_size),
+        mode='bicubic',
+        align_corners=False,
+    )
+
+    # Reshape back to a 1D sequence
+    patch_pos_embed = patch_pos_embed.permute(0, 2, 3, 1).flatten(1, 2)
+    
+    # Concatenate the CLS token and the new patch embeddings
+    new_pos_embed = torch.cat((extra_tokens, patch_pos_embed), dim=1)
+    
+    # Replace the `pos_embed` key in the state dictionary with the new, interpolated one
+    checkpoint_model_state['pos_embed'] = new_pos_embed

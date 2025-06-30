@@ -29,7 +29,7 @@ def get_base_config():
         'path': '../data/mvtec_loco_anomaly_detection/',
         'category': 'breakfast_box',
         'image_size': 224, # Legacy, will be superseded by target_size
-        'target_size': 512, # New parameter for high-resolution processing
+        'target_size': 224, # New parameter for high-resolution processing
         # Transformation/Augmentation parameters for the reconstruction task
         'mask_ratio': 0.6,    # Percentage of image to mask for reconstruction
         'mask_align_patches': True, # Align masking with patch boundaries
@@ -65,8 +65,8 @@ def get_base_config():
     # -----------------------------------------------------------------------------
     config['logging'] = {
         'output_dir': './outputs/base_experiment',
-        'log_freq': 20,         # Log training status every N batches
-        'save_ckpt_freq': 10,   # Save a checkpoint every N epochs
+        'log_freq': 50,         # Log training status every N batches
+        'save_ckpt_freq': 50,   # Save a checkpoint every N epochs
     }
 
     # -----------------------------------------------------------------------------

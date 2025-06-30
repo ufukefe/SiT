@@ -22,7 +22,7 @@ def get_config():
     config['dataset']['path'] = '../data/mvtec_loco_anomaly_detection/'
     config['dataset']['category'] = 'breakfast_box'
     # Set the target size for high-resolution processing
-    config['dataset']['target_size'] = 512 
+    config['dataset']['target_size'] = 224 
     config['dataset']['mask_ratio'] = 0.6
     
     # --- Override training configuration ---
